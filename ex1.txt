@@ -1,0 +1,121 @@
+import os
+import re
+import pandas as pd
+from datetime import datetime
+from sklearn.feature_extraction.text import TfidfVectorizer
+from sklearn.linear_model import LogisticRegression
+from sklearn.multioutput import MultiOutputClassifier
+from sklearn.model_selection import train_test_split
+from sklearn.metrics import classification_report
+import joblib
+
+# -------------------------------
+# 1. Load and Preprocess Sentences
+# -------------------------------
+
+def clean_text(text):
+    # Remove headers/footers, like Table of Contents
+    text = re.sub(r'(?i)table of contents.*', '', text)
+    text = re.sub(r'\s+', ' ', text)
+
+    # Lowercase
+    text = text.lower()
+
+    return text
+
+def extract_sentences_from_text(text):
+    text = clean_text(text)
+    # Split by common sentence boundaries
+    sentences = re.split(r'(?<=[.!?]) +', text)
+    return [s.strip() for s in sentences if len(s.strip()) > 10]
+
+# -------------------------------
+# 2. Load Labeled Training Data
+# -------------------------------
+
+def load_training_data(csv_path):
+    """
+    Expected format:
+    sentence,is_top_customer,is_top_supplier
+    "One customer accounted for 12%",1,0
+    """
+    return pd.read_csv(csv_path)
+
+# -------------------------------
+# 3. Vectorization
+# -------------------------------
+
+def vectorize_sentences(sentences):
+    tfidf = TfidfVectorizer(max_features=3000, stop_words='english')
+    vectors = tfidf.fit_transform(sentences)
+    return tfidf, vectors
+
+# -------------------------------
+# 4. Train Logistic Regression Model
+# -------------------------------
+
+def train_model(X, y):
+    clf = MultiOutputClassifier(LogisticRegression(max_iter=1000))
+    clf.fit(X, y)
+    return clf
+
+# -------------------------------
+# 5. Predict on New Sentences
+# -------------------------------
+
+def predict_sentences(model, vectorizer, sentences, source_pdf="unknown.pdf"):
+    vectors = vectorizer.transform(sentences)
+    preds = model.predict(vectors)
+    df = pd.DataFrame(preds, columns=["is_top_customer", "is_top_supplier"])
+    df.insert(0, "sentence", sentences)
+    df["source_pdf"] = source_pdf
+    return df
+
+# -------------------------------
+# 6. Save Predictions
+# -------------------------------
+
+def save_output(df, output_dir="outputs"):
+    os.makedirs(output_dir, exist_ok=True)
+    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    output_path = os.path.join(output_dir, f"predictions_{timestamp}.csv")
+    df.to_csv(output_path, index=False)
+    print(f"Saved predictions to {output_path}")
+
+# -------------------------------
+# Main Flow (Training & Inference)
+# -------------------------------
+
+if __name__ == "__main__":
+    # === STEP 1: Load labeled training data ===
+    training_df = load_training_data("mock_training_data.csv")  # replace with your path
+
+    # === STEP 2: Vectorize ===
+    tfidf_vectorizer, X = vectorize_sentences(training_df["sentence"])
+    y = training_df[["is_top_customer", "is_top_supplier"]]
+
+    # === STEP 3: Train ===
+    model = train_model(X, y)
+
+    # === STEP 4: Save Model for Reuse ===
+    joblib.dump(model, "risk_classifier_model.pkl")
+    joblib.dump(tfidf_vectorizer, "risk_vectorizer.pkl")
+
+    # === STEP 5: Evaluate on hold-out (optional) ===
+    X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=0.2, random_state=42)
+    model_eval = train_model(X_train, y_train)
+    preds = model_eval.predict(X_test)
+    print("EVALUATION REPORT:")
+    print(classification_report(y_test, preds))
+
+    # === STEP 6: Predict on new text ===
+    # Replace below with text extracted from a real PDF
+    new_text = """
+    For the year ended December 31, 2023, one customer accounted for approximately 12% of our consolidated revenues.
+    We rely on a limited number of suppliers for certain critical components and equipment used in our operations.
+    """
+    new_sentences = extract_sentences_from_text(new_text)
+    result_df = predict_sentences(model, tfidf_vectorizer, new_sentences, source_pdf="sample_10K.pdf")
+
+    # === STEP 7: Save Predictions ===
+    save_output(result_df)
